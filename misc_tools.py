@@ -1,30 +1,27 @@
 import io
+import math
 import tarfile
 from pathlib import Path
-import re
 
 import numpy as np
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(page_title='WiBotic Misc Tools', layout='wide')
 
-PAIR_RE = re.compile(r'^(RX|TX|INF)_(\d{4})\.(CSV|TML)$', re.IGNORECASE)
+PAIR_RE = __import__('re').compile(r'^(RX|TX|INF)_(\d{4})\.(CSV|TML)$', __import__('re').IGNORECASE)
 
 
 def scan_tar_bytes(file_bytes: bytes):
     mapping = {}
     with tarfile.open(fileobj=io.BytesIO(file_bytes), mode='r') as tf:
-        for member in tf.getmembers():
-            if not member.isfile():
-                continue
+        members = [m for m in tf.getmembers() if m.isfile()]
+        for member in members:
             name = Path(member.name).name
-            m = PAIR_RE.match(name)
-            if not m:
+            match = PAIR_RE.match(name)
+            if not match:
                 continue
-            kind, suffix, _ = m.groups()
+            kind, suffix, _ext = match.groups()
             mapping.setdefault(suffix, {})[kind.upper()] = member.name
     return mapping
 
@@ -34,24 +31,17 @@ def read_csv_from_tar(tf, member_name):
         return pd.read_csv(f, low_memory=False)
 
 
-def read_tml_lines(tf, member_name):
-    with tf.extractfile(member_name) as f:
-        raw = f.read()
-    return raw.decode('utf-8', errors='replace').splitlines()
-
-
 def prefix_columns(df, prefix):
     out = df.copy()
     out.columns = [f'{prefix}{c}' for c in out.columns]
     return out
 
 
-def build_unified_dataframe(rx_df, tx_df, tml_lines=None):
-    max_len = max(len(rx_df), len(tx_df), len(tml_lines or []))
+def build_unified_dataframe(rx_df, tx_df):
+    max_len = max(len(rx_df), len(tx_df))
     rx_df = prefix_columns(rx_df.reindex(range(max_len)), 'Rx')
     tx_df = prefix_columns(tx_df.reindex(range(max_len)), 'Tx')
-    tml_series = pd.Series(tml_lines or [], name='tml_info').reindex(range(max_len))
-    return pd.concat([tml_series, tx_df, rx_df], axis=1)
+    return pd.concat([tx_df, rx_df], axis=1)
 
 
 def read_source_uploaded(uploaded_file, selected_suffix=None):
@@ -69,37 +59,25 @@ def read_source_uploaded(uploaded_file, selected_suffix=None):
         with tarfile.open(fileobj=io.BytesIO(file_bytes), mode='r') as tf:
             rx_df = read_csv_from_tar(tf, entry['RX'])
             tx_df = read_csv_from_tar(tf, entry['TX'])
-            tml_lines = read_tml_lines(tf, entry['INF']) if 'INF' in entry else None
-        return build_unified_dataframe(rx_df, tx_df, tml_lines), 'tar', suffix
+        return build_unified_dataframe(rx_df, tx_df), 'tar', suffix
     raise ValueError('Please upload a CSV or TAR file.')
 
 
-def safe_divide(a, b):
-    a = pd.to_numeric(a, errors='coerce')
-    b = pd.to_numeric(b, errors='coerce')
-    out = pd.Series(np.nan, index=a.index, dtype='float64')
-    valid = a.notna() & b.notna() & (b != 0)
-    out.loc[valid] = a.loc[valid] / b.loc[valid]
-    return out
+def add_calculated_columns(data: pd.DataFrame) -> pd.DataFrame:
+    data = data.copy()
+    if 'RxVBatt' in data.columns and 'RxIBatt' in data.columns:
+        data['RxPower'] = pd.to_numeric(data['RxVBatt'], errors='coerce') * pd.to_numeric(data['RxIBatt'], errors='coerce')
+    if 'TxVPA' in data.columns and 'TxIPA' in data.columns:
+        data['TxPaPower'] = pd.to_numeric(data['TxVPA'], errors='coerce') * pd.to_numeric(data['TxIPA'], errors='coerce')
+    if 'RxPower' in data.columns and 'TxPaPower' in data.columns:
+        tx_pa = pd.to_numeric(data['TxPaPower'], errors='coerce')
+        rx_p = pd.to_numeric(data['RxPower'], errors='coerce')
+        valid = tx_pa.notna() & (tx_pa != 0) & rx_p.notna()
+        data['WirelessEfficiency'] = np.where(valid, (rx_p / tx_pa) * 100.0, np.nan)
+    return data
 
 
-def add_calculated_columns(df):
-    if 'RxVBatt' in df.columns and 'RxIBatt' in df.columns:
-        df['RxPower'] = pd.to_numeric(df['RxVBatt'], errors='coerce') * pd.to_numeric(df['RxIBatt'], errors='coerce')
-    if 'TxVMonSys' in df.columns and 'TxIMonSys' in df.columns:
-        df['TxInPower'] = pd.to_numeric(df['TxVMonSys'], errors='coerce') * pd.to_numeric(df['TxIMonSys'], errors='coerce')
-    if 'TxVPA' in df.columns and 'TxIPA' in df.columns:
-        df['TxPaPower'] = pd.to_numeric(df['TxVPA'], errors='coerce') * pd.to_numeric(df['TxIPA'], errors='coerce')
-    if 'RxPower' in df.columns and 'TxPaPower' in df.columns:
-        df['WirelessEfficiency'] = safe_divide(df['RxPower'], df['TxPaPower']) * 100
-        df['PowerLoss'] = pd.to_numeric(df['TxPaPower'], errors='coerce') - pd.to_numeric(df['RxPower'], errors='coerce')
-    if 'TxPaPower' in df.columns and 'TxInPower' in df.columns:
-        df['TxDcEfficiency'] = safe_divide(df['TxPaPower'], df['TxInPower']) * 100
-    if 'TxTemp' in df.columns and 'RxTemp' in df.columns:
-        df['TempDelta'] = pd.to_numeric(df['TxTemp'], errors='coerce') - pd.to_numeric(df['RxTemp'], errors='coerce')
-
-
-def prepare_loaded_dataframe(df):
+def prepare_loaded_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     if 'TxRTC' in df.columns:
         df['TxRTC'] = pd.to_numeric(df['TxRTC'], errors='coerce')
@@ -115,153 +93,113 @@ def prepare_loaded_dataframe(df):
         df['Time_sec'] = (df['Timestamp'] - df['Timestamp'].iloc[0]).dt.total_seconds()
     else:
         df['Time_sec'] = np.arange(len(df), dtype=float)
-    add_calculated_columns(df)
-    return df
+    return add_calculated_columns(df)
 
 
-def get_plot_columns(df):
-    cols = []
-    for c in df.columns:
-        if c == 'Time_sec':
-            continue
-        if pd.to_numeric(df[c], errors='coerce').notna().sum() > 0:
-            cols.append(c)
-    return cols
-
-
-def smooth_series(series, mode, window):
-    window = max(1, int(window))
-    mode = mode.lower()
-    if mode == 'none':
-        return series
-    if mode == 'moving average':
-        return series.rolling(window=window, min_periods=1).mean()
-    if mode == 'median':
-        return series.rolling(window=window, min_periods=1).median()
-    if mode == 'ema':
-        return series.ewm(span=window, adjust=False).mean()
-    return series
-
-
-def render_plot_explorer():
-    st.header('Plot Explorer')
-    uploaded = st.file_uploader('Upload TAR or CSV', type=['tar', 'csv'], key='plot_upload')
-    if not uploaded:
-        st.info('Upload a TAR or CSV file to start.')
-        return
-
-    suffix = None
-    if uploaded.name.lower().endswith('.tar'):
-        mapping = scan_tar_bytes(uploaded.getvalue())
-        complete = sorted([s for s, entry in mapping.items() if 'RX' in entry and 'TX' in entry])
-        if len(complete) > 1:
-            suffix = st.selectbox('Select TAR pair', complete)
-    try:
-        raw_df, _, picked = read_source_uploaded(uploaded, suffix)
-        df = prepare_loaded_dataframe(raw_df)
-    except Exception as e:
-        st.error(str(e))
-        return
-
-    st.caption(f'Loaded rows: {len(df):,}' + (f' | TAR pair: {picked}' if picked else ''))
-    columns = get_plot_columns(df)
-    if not columns:
-        st.warning('No numeric columns available to plot.')
-        return
-
-    left, right = st.columns([1, 3])
-    with left:
-        selected = st.multiselect('Signals', columns, default=columns[: min(4, len(columns))])
-        smoothing = st.selectbox('Smoothing', ['None', 'Moving Average', 'Median', 'EMA'])
-        window = st.number_input('Window', min_value=1, value=10, step=1)
-    if not selected:
-        st.warning('Select at least one signal.')
-        return
-
-    plot_df = pd.DataFrame({'Time_sec': pd.to_numeric(df['Time_sec'], errors='coerce')})
-    for col in selected:
-        plot_df[col] = smooth_series(pd.to_numeric(df[col], errors='coerce'), smoothing, window)
-
-    long_df = plot_df.melt(id_vars=['Time_sec'], var_name='Signal', value_name='Value').dropna()
-    fig = px.line(long_df, x='Time_sec', y='Value', color='Signal')
-    fig.update_layout(height=550, xaxis_title='Time (seconds)', yaxis_title='Value')
-    with right:
-        st.plotly_chart(fig, use_container_width=True)
-
-    with st.expander('Preview data'):
-        st.dataframe(df.head(200), use_container_width=True)
-
-
-def render_derate_summary():
-    st.header('Derate Summary')
-    uploaded = st.file_uploader('Upload TAR or CSV', type=['tar', 'csv'], key='derate_upload')
-    if not uploaded:
-        st.info('Upload a TAR or CSV file to build a simple derate view.')
-        return
-    try:
-        raw_df, _, _ = read_source_uploaded(uploaded)
-        df = prepare_loaded_dataframe(raw_df)
-    except Exception as e:
-        st.error(str(e))
-        return
-
-    power_candidates = [c for c in ['RxPower', 'TxPaPower', 'TxInPower'] if c in df.columns]
-    temp_candidates = [c for c in ['TxTemp', 'RxTemp', 'TempDelta'] if c in df.columns]
-    if not power_candidates or not temp_candidates:
-        st.warning('Need at least one power column and one temperature column.')
-        st.dataframe(df.head(50), use_container_width=True)
-        return
-
-    c1, c2 = st.columns(2)
-    power_col = c1.selectbox('Power column', power_candidates)
-    temp_col = c2.selectbox('Temperature column', temp_candidates)
-    work = df[[power_col, temp_col]].copy()
-    work[power_col] = pd.to_numeric(work[power_col], errors='coerce')
-    work[temp_col] = pd.to_numeric(work[temp_col], errors='coerce')
-    work = work.dropna()
-    if work.empty:
-        st.warning('No valid rows after cleaning.')
-        return
-    work['TempBin'] = (np.round(work[temp_col] / 2) * 2).round(1)
-    curve = work.groupby('TempBin')[power_col].mean().reset_index()
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=curve['TempBin'], y=curve[power_col], mode='lines+markers', name=power_col))
-    fig.update_layout(height=500, xaxis_title='Temperature bin', yaxis_title=f'{power_col} mean')
-    st.plotly_chart(fig, use_container_width=True)
-    st.dataframe(curve, use_container_width=True)
-
-
-def render_rf_calc():
-    st.header('RF Resonance Calculator')
-    c1, c2, c3 = st.columns(3)
-    freq_mhz = c1.number_input('Frequency (MHz)', min_value=0.0, value=6.78, step=0.01)
-    inductance_uh = c2.number_input('Inductance (uH)', min_value=0.0, value=10.0, step=0.1)
-    capacitance_pf = c3.number_input('Capacitance (pF)', min_value=0.0, value=55144.0, step=10.0)
-
-    freq_hz = freq_mhz * 1e6
-    L = inductance_uh * 1e-6
-    C = capacitance_pf * 1e-12
-
-    c4, c5 = st.columns(2)
-    if L > 0 and C > 0:
-        calc_freq = 1 / (2 * np.pi * np.sqrt(L * C))
-        c4.metric('Calculated Frequency', f'{calc_freq / 1e6:.6f} MHz')
-    if freq_hz > 0 and C > 0:
-        calc_L = 1 / (((2 * np.pi * freq_hz) ** 2) * C)
-        c5.metric('Required Inductance', f'{calc_L * 1e6:.6f} uH')
-    if freq_hz > 0 and L > 0:
-        calc_C = 1 / (((2 * np.pi * freq_hz) ** 2) * L)
-        st.metric('Required Capacitance', f'{calc_C * 1e12:.2f} pF')
+def rf_resonance(freq_mhz=None, inductance_uh=None, capacitance_pf=None):
+    f = None if freq_mhz is None else float(freq_mhz) * 1e6
+    l = None if inductance_uh is None else float(inductance_uh) * 1e-6
+    c = None if capacitance_pf is None else float(capacitance_pf) * 1e-12
+    provided = sum(v is not None and v > 0 for v in (f, l, c))
+    if provided < 2:
+        return None
+    if f is None:
+        f = 1.0 / (2.0 * math.pi * math.sqrt(l * c))
+    elif l is None:
+        l = 1.0 / (((2.0 * math.pi * f) ** 2) * c)
+    elif c is None:
+        c = 1.0 / (((2.0 * math.pi * f) ** 2) * l)
+    return f / 1e6, l * 1e6, c * 1e12
 
 
 st.title('WiBotic Misc Tools')
-st.caption('Lightweight tools only. No SOS, no Google Sheets, no production board.')
+mode = st.sidebar.radio('Tool', ['Plot Explorer', 'Derate Summary', 'RF Resonance Calculator'])
 
-page = st.radio('Tool', ['Plot Explorer', 'Derate Summary', 'RF Resonance Calculator'], horizontal=True)
-if page == 'Plot Explorer':
-    render_plot_explorer()
-elif page == 'Derate Summary':
-    render_derate_summary()
+if mode == 'RF Resonance Calculator':
+    st.subheader('RF Resonance Calculator')
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        freq_mhz = st.number_input('Frequency (MHz)', min_value=0.0, value=6.78, step=0.01)
+    with c2:
+        inductance_uh = st.number_input('Inductance (uH)', min_value=0.0, value=0.0, step=0.01)
+    with c3:
+        capacitance_pf = st.number_input('Capacitance (pF)', min_value=0.0, value=0.0, step=1.0)
+    result = rf_resonance(
+        None if freq_mhz == 0 else freq_mhz,
+        None if inductance_uh == 0 else inductance_uh,
+        None if capacitance_pf == 0 else capacitance_pf,
+    )
+    if result is None:
+        st.info('Fill any two values to calculate the third.')
+    else:
+        f_mhz, l_uh, c_pf = result
+        a, b, c = st.columns(3)
+        a.metric('Frequency', f'{f_mhz:.6f} MHz')
+        b.metric('Inductance', f'{l_uh:.6f} uH')
+        c.metric('Capacitance', f'{c_pf:.3f} pF')
+
 else:
-    render_rf_calc()
+    uploaded_file = st.file_uploader('Upload CSV or TAR', type=['csv', 'tar'])
+    if uploaded_file is not None:
+        selected_suffix = None
+        if uploaded_file.name.lower().endswith('.tar'):
+            mapping = scan_tar_bytes(uploaded_file.getvalue())
+            complete = sorted([s for s, entry in mapping.items() if 'RX' in entry and 'TX' in entry])
+            if complete:
+                selected_suffix = st.selectbox('Select TAR pair', complete)
+        try:
+            raw_df, source_type, suffix = read_source_uploaded(uploaded_file, selected_suffix)
+            df = prepare_loaded_dataframe(raw_df)
+            st.success(f'Loaded {len(df):,} rows from {source_type.upper()}{(" pair " + suffix) if suffix else ""}.')
+        except Exception as e:
+            st.error(str(e))
+            st.stop()
+
+        if mode == 'Plot Explorer':
+            st.subheader('Plot Explorer')
+            numeric_cols = [c for c in df.columns if c != 'Time_sec' and pd.to_numeric(df[c], errors='coerce').notna().sum() > 0]
+            selected = st.multiselect('Signals', numeric_cols, default=numeric_cols[:3])
+            time_mode = st.selectbox('Time axis', ['Seconds', 'Minutes', 'Hours', 'Sample index'])
+            x = pd.to_numeric(df['Time_sec'], errors='coerce')
+            if time_mode == 'Minutes':
+                x_plot = x / 60.0
+            elif time_mode == 'Hours':
+                x_plot = x / 3600.0
+            elif time_mode == 'Sample index':
+                x_plot = np.arange(len(df))
+            else:
+                x_plot = x
+            chart_df = pd.DataFrame({'x': x_plot})
+            for col in selected:
+                chart_df[col] = pd.to_numeric(df[col], errors='coerce')
+            st.line_chart(chart_df.set_index('x'))
+            st.dataframe(df[selected + ['Time_sec']].head(500), use_container_width=True)
+
+        elif mode == 'Derate Summary':
+            st.subheader('Derate Summary')
+            power_candidates = [c for c in ['RxPower', 'TxPaPower'] if c in df.columns]
+            if not power_candidates:
+                st.warning('No calculated power columns were found. Need RxVBatt/RxIBatt or TxVPA/TxIPA.')
+            else:
+                power_col = st.selectbox('Power signal', power_candidates)
+                valid = df[['Time_sec', power_col]].copy()
+                valid['Time_sec'] = pd.to_numeric(valid['Time_sec'], errors='coerce')
+                valid[power_col] = pd.to_numeric(valid[power_col], errors='coerce')
+                valid = valid.dropna()
+                if valid.empty:
+                    st.warning('No valid rows for the selected signal.')
+                else:
+                    avg_power = float(valid[power_col].mean())
+                    min_power = float(valid[power_col].min())
+                    max_power = float(valid[power_col].max())
+                    samples = int(len(valid))
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric('Average Power', f'{avg_power:.2f} W')
+                    c2.metric('Min Power', f'{min_power:.2f} W')
+                    c3.metric('Max Power', f'{max_power:.2f} W')
+                    c4.metric('Samples', f'{samples}')
+                    plot_df = pd.DataFrame({'x': valid['Time_sec'] / 60.0, power_col: valid[power_col]})
+                    st.line_chart(plot_df.set_index('x'))
+                    st.dataframe(valid.head(500), use_container_width=True)
+    else:
+        st.info('Upload a CSV or TAR file to use this tool.')
