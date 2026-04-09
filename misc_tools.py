@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title='WiBotic Misc Tools', layout='wide')
+st.set_page_config(page_title='WiBotic Tool O', layout='wide')
 
 PAIR_RE = re.compile(r'^(RX|TX|INF)_(\d{4})\.(CSV|TML)$', re.IGNORECASE)
 
@@ -127,24 +127,17 @@ def prepare_loaded_dataframe(df):
     return df
 
 
-def preprocess_arduino_csv(uploaded_file):
+def preprocess_external_csv(uploaded_file, require_value=False):
     df = pd.read_csv(uploaded_file)
     if 'time' not in df.columns:
-        raise ValueError("Arduino CSV must contain a 'time' column.")
-    df['time_utc'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
-    df['time_pacific'] = df['time_utc'].dt.tz_convert('America/Los_Angeles')
-    df = df.dropna(subset=['time_pacific']).sort_values('time_pacific').reset_index(drop=True)
-    return df
-
-
-def preprocess_chamber_csv(uploaded_file):
-    df = pd.read_csv(uploaded_file)
-    if 'time' not in df.columns or 'value' not in df.columns:
+        raise ValueError("CSV must contain a 'time' column.")
+    if require_value and 'value' not in df.columns:
         raise ValueError("CSV must contain 'time' and 'value' columns.")
     df['time_utc'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
     df['time_pacific'] = df['time_utc'].dt.tz_convert('America/Los_Angeles')
-    df['value_num'] = pd.to_numeric(df['value'], errors='coerce')
-    df = df.dropna(subset=['time_pacific', 'value_num']).sort_values('time_pacific').reset_index(drop=True)
+    if 'value' in df.columns:
+        df['value_num'] = pd.to_numeric(df['value'], errors='coerce')
+    df = df.dropna(subset=['time_pacific']).sort_values('time_pacific').reset_index(drop=True)
     return df
 
 
@@ -211,6 +204,28 @@ def make_line_chart(df, x_col, y_cols, height=360):
 # -----------------------------
 # Tabs
 # -----------------------------
+def tab_home():
+    st.subheader('Tool O Home')
+    st.markdown(
+        """
+        This version keeps the misc engineering tools together in one app.
+
+        Included:
+        - RF Calculator
+        - Capacitance Bank
+        - Simple Plot Explorer
+        - Derate Summary
+        - Arduino Sync
+
+        Removed:
+        - Weekly Production
+        - SOS Inventory
+        - Label app
+        - Google Sheets
+        """
+    )
+
+
 def tab_rf_calculator():
     st.subheader('RF Resonance Calculator')
     c1, c2, c3 = st.columns(3)
@@ -220,8 +235,6 @@ def tab_rf_calculator():
         inductance_uh = st.number_input('Inductance (uH)', min_value=0.0, value=10.0, step=0.1, format='%.6f')
     with c3:
         capacitance_pf = st.number_input('Capacitance (pF)', min_value=0.0, value=55100.0, step=10.0, format='%.6f')
-
-    st.caption('Fill any two values mentally or directly. This tab shows the implied third value.')
 
     c = capacitance_pf * 1e-12
     l = inductance_uh * 1e-6
@@ -317,13 +330,18 @@ def tab_derate_summary():
     try:
         df_raw, _kind, _suffix = read_source_uploaded(main_file, selected_suffix)
         main_df = prepare_loaded_dataframe(df_raw)
-        temp_df = preprocess_chamber_csv(chamber_file)
+        temp_df = preprocess_external_csv(chamber_file, require_value=True)
     except Exception as e:
         st.error(str(e))
         return
 
+    power_options = [c for c in ['RxPower', 'TxPaPower', 'TxInPower'] if c in main_df.columns]
+    if not power_options:
+        st.warning('No supported power columns found in main file.')
+        return
+
     manual_start = st.text_input('Manual start time if main data has no Timestamp', value='')
-    power_col = st.selectbox('Power column', [c for c in ['RxPower', 'TxPaPower', 'TxInPower'] if c in main_df.columns])
+    power_col = st.selectbox('Power column', power_options)
     try:
         main_df['ExternalTemp'] = align_external_to_main_data(main_df, temp_df, value_col='value_num', manual_start_text=manual_start)
     except Exception as e:
@@ -364,12 +382,15 @@ def tab_arduino_sync():
     try:
         df_raw, _kind, _suffix = read_source_uploaded(main_file, selected_suffix)
         main_df = prepare_loaded_dataframe(df_raw)
-        arduino_df = preprocess_arduino_csv(arduino_file)
+        arduino_df = preprocess_external_csv(arduino_file, require_value=False)
     except Exception as e:
         st.error(str(e))
         return
 
-    numeric_arduino_cols = [c for c in arduino_df.columns if c not in ['time', 'time_utc', 'time_pacific'] and pd.to_numeric(arduino_df[c], errors='coerce').notna().sum() > 0]
+    numeric_arduino_cols = [
+        c for c in arduino_df.columns
+        if c not in ['time', 'time_utc', 'time_pacific'] and pd.to_numeric(arduino_df[c], errors='coerce').notna().sum() > 0
+    ]
     if not numeric_arduino_cols:
         st.warning('No numeric Arduino columns found.')
         st.dataframe(arduino_df.head(100), use_container_width=True)
@@ -399,10 +420,11 @@ def tab_arduino_sync():
 # -----------------------------
 # App
 # -----------------------------
-st.title('WiBotic Misc Tools')
-st.caption('Lightweight misc tools only. No SOS. No Google Sheets. No label app.')
+st.title('WiBotic Tool O')
+st.caption('All-in-one misc engineering tools. Weekly Production and SOS removed.')
 
 tabs = st.tabs([
+    'Home',
     'RF Calculator',
     'Capacitance Bank',
     'Simple Plot',
@@ -411,12 +433,14 @@ tabs = st.tabs([
 ])
 
 with tabs[0]:
-    tab_rf_calculator()
+    tab_home()
 with tabs[1]:
-    tab_cap_bank()
+    tab_rf_calculator()
 with tabs[2]:
-    tab_plot_explorer()
+    tab_cap_bank()
 with tabs[3]:
-    tab_derate_summary()
+    tab_plot_explorer()
 with tabs[4]:
+    tab_derate_summary()
+with tabs[5]:
     tab_arduino_sync()
