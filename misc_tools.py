@@ -208,21 +208,7 @@ def tab_home():
     st.subheader('Tool O Home')
     st.markdown(
         """
-        This version keeps the misc engineering tools together in one app.
-
-        Included:
-        - RF Calculator
-        - Capacitance Bank
-        - Simple Plot Explorer
-        - Derate Summary
-        - Arduino Sync
-
-        Removed:
-        - Weekly Production
-        - SOS Inventory
-        - Label app
-        - Google Sheets
-        """
+    
     )
 
 
