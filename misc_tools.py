@@ -1,4 +1,5 @@
 import io
+import tempfile
 import re
 import tarfile
 from pathlib import Path
@@ -206,6 +207,24 @@ def make_line_chart(df, x_col, y_cols, height=360):
 # -----------------------------
 def tab_home():
     st.subheader('Tool O Home')
+    st.markdown(
+        """
+        This version keeps the misc engineering tools together in one app.
+
+        Included:
+        - RF Calculator
+        - Capacitance Bank
+        - Simple Plot Explorer
+        - Derate Summary
+        - Arduino Sync
+
+        Removed:
+        - Weekly Production
+        - SOS Inventory
+        - Label app
+        - Google Sheets
+        """
+    )
 
 
 def tab_rf_calculator():
@@ -399,6 +418,248 @@ def tab_arduino_sync():
     st.download_button('Download synced CSV', data=csv_bytes, file_name='arduino_synced_output.csv', mime='text/csv')
 
 
+
+
+# -----------------------------
+# Box Build Report helpers
+# -----------------------------
+@st.cache_resource(show_spinner=False)
+def load_box_build_module():
+    import importlib.util
+    module_path = Path(__file__).with_name('bb_report.py')
+    spec = importlib.util.spec_from_file_location('bb_report_module', module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@st.cache_resource(show_spinner=False)
+def get_box_build_table(db_name: str):
+    bb = load_box_build_module()
+    db_enum = bb.DatabaseName.PRODUCTION if db_name == 'Production' else bb.DatabaseName.DEVELOPMENT
+    return bb.get_db_table(db_enum)
+
+
+def _safe_get(record, *path, default=None):
+    cur = record
+    for key in path:
+        try:
+            cur = cur[key]
+        except Exception:
+            return default
+    return cur
+
+
+def _record_summary_row(record):
+    create_time = record.get('create_time')
+    local_text = ''
+    if create_time:
+        try:
+            dt_utc = pd.to_datetime(create_time, utc=True, errors='coerce')
+            if pd.notna(dt_utc):
+                local_text = dt_utc.tz_convert('America/Los_Angeles').strftime('%Y-%m-%d %H:%M:%S')
+        except Exception:
+            local_text = str(create_time)
+    return {
+        'Local Time': local_text,
+        'Procedure': _safe_get(record, 'config', 'procedure_name', default=''),
+        'Result': 'Passed' if record.get('passed') else 'Failed',
+        'Serial': record.get('serial', ''),
+        'Model': _safe_get(record, 'config', 'ids', 'mn', default=''),
+        'Mac': record.get('mac', record.get('oc_mac', '')),
+    }
+
+
+def _extract_chart_frames(record):
+    frames = []
+    for key in sorted(k for k in record.keys() if str(k).startswith('datalog_')):
+        payload = record.get(key, {})
+        if not isinstance(payload, dict):
+            continue
+        for device_name, csv_text in payload.items():
+            try:
+                df = pd.read_csv(io.StringIO(csv_text))
+            except Exception:
+                continue
+            if 'Timestamp' in df.columns:
+                df['Timestamp'] = pd.to_numeric(df['Timestamp'], errors='coerce')
+                df = df.dropna(subset=['Timestamp']).reset_index(drop=True)
+                if not df.empty:
+                    df['Timestamp'] = df['Timestamp'] - df['Timestamp'].iloc[0]
+            for col in df.columns:
+                if col != 'Timestamp':
+                    df[col] = pd.to_numeric(df[col], errors='ignore')
+            frames.append((key, str(device_name).upper(), df))
+    return frames
+
+
+def _render_box_build_record_view(record):
+    summary = _record_summary_row(record)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric('Result', summary['Result'])
+    c2.metric('Model', summary['Model'] or '—')
+    c3.metric('Serial', summary['Serial'] or '—')
+    c4.metric('Mac', summary['Mac'] or '—')
+
+    st.caption(
+        f"Procedure: {summary['Procedure'] or '—'} | "
+        f"Local time: {summary['Local Time'] or '—'}"
+    )
+
+    with st.expander('Record details', expanded=False):
+        details = {
+            'create_time': record.get('create_time'),
+            'time': record.get('time'),
+            'serial': record.get('serial'),
+            'mac': record.get('mac'),
+            'oc_mac': record.get('oc_mac'),
+            'model': _safe_get(record, 'config', 'ids', 'mn', default=''),
+            'procedure_name': _safe_get(record, 'config', 'procedure_name', default=''),
+            'passed': record.get('passed'),
+            'report_type': str(record.get('type')),
+        }
+        st.json(details)
+
+    tol = record.get('tolerance_checks')
+    if isinstance(tol, dict) and tol:
+        rows = []
+        for test_name, values in tol.items():
+            if isinstance(values, dict):
+                rows.append({
+                    'Test': test_name,
+                    'Low': values.get('lower_limit'),
+                    'High': values.get('upper_limit'),
+                    'Actual': values.get('actual'),
+                    'Pass': values.get('pass'),
+                })
+        if rows:
+            st.markdown('**Tolerance checks**')
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, height=260)
+
+    prompts = record.get('pass_fail_prompts')
+    if isinstance(prompts, dict) and prompts:
+        rows = [{'Prompt': k, 'Pass': v} for k, v in prompts.items()]
+        st.markdown('**Manual checks**')
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, height=180)
+
+    frames = _extract_chart_frames(record)
+    if not frames:
+        st.info('No datalog charts found in this record.')
+        return
+
+    st.markdown('**Test data viewer**')
+    for datalog_name, device_name, df in frames:
+        with st.expander(f'{datalog_name} · {device_name}', expanded=('wireless' in datalog_name.lower())):
+            if 'Timestamp' not in df.columns:
+                st.dataframe(df.head(200), use_container_width=True, height=260)
+                continue
+            numeric_cols = [
+                c for c in df.columns
+                if c != 'Timestamp' and pd.to_numeric(df[c], errors='coerce').notna().sum() > 0
+            ]
+            default_cols = numeric_cols[:4]
+            selected = st.multiselect(
+                f'Signals for {datalog_name} / {device_name}',
+                numeric_cols,
+                default=default_cols,
+                key=f"bbsig_{datalog_name}_{device_name}",
+            )
+            if selected:
+                chart_df = df[['Timestamp'] + selected].copy()
+                for col in selected:
+                    chart_df[col] = pd.to_numeric(chart_df[col], errors='coerce')
+                make_line_chart(chart_df, 'Timestamp', selected, height=320)
+            st.dataframe(df.head(200), use_container_width=True, height=220)
+
+
+def tab_box_build_report():
+    st.subheader('Box Build Report')
+    st.caption('Search Box Build by serial number or MAC, preview a record, and generate the original PDF report.')
+
+    bb = load_box_build_module()
+
+    left, right = st.columns([1.2, 1])
+    with left:
+        db_name = st.selectbox('Database', ['Production', 'Development'], index=0)
+        query = st.text_input('Serial number or MAC address', value='').strip().upper()
+    with right:
+        st.markdown('')
+        st.markdown('')
+        search_clicked = st.button('Search Box Build', type='primary', use_container_width=True)
+
+    if search_clicked:
+        normalized, input_type = bb.detect_serial_or_mac(query)
+        if input_type == bb.InputType.UNKNOWN:
+            st.error('That value does not look like a valid serial number or MAC address.')
+        else:
+            try:
+                table = get_box_build_table(db_name)
+                db_enum = bb.DatabaseName.PRODUCTION if db_name == 'Production' else bb.DatabaseName.DEVELOPMENT
+                items = bb.get_item_list_from_serial_or_mac(db_enum, table, normalized, input_type) or []
+                st.session_state['bb_items'] = items
+                st.session_state['bb_query'] = normalized
+                st.session_state['bb_db_name'] = db_name
+            except Exception as e:
+                st.exception(e)
+
+    items = st.session_state.get('bb_items', [])
+    query_used = st.session_state.get('bb_query', query)
+
+    if not items:
+        st.info('Enter a serial number or MAC address and click Search Box Build.')
+        return
+
+    st.success(f'Found {len(items)} matching record(s) for {query_used}.')
+
+    summary_df = pd.DataFrame([_record_summary_row(r) for r in items])
+    st.dataframe(summary_df, use_container_width=True, height=min(420, 80 + 35 * len(summary_df)))
+
+    labels = [
+        f"{i+1}. {row['Local Time']} | {row['Procedure']} | {row['Result']} | {row['Serial']}"
+        for i, row in summary_df.iterrows()
+    ]
+    selected_label = st.selectbox('Select record to view', labels, index=max(len(labels) - 1, 0))
+    selected_index = labels.index(selected_label)
+    record = items[selected_index]
+
+    if not record.get('passed'):
+        st.warning('This is a failed record. The original CLI script normally asks for confirmation before generating the PDF.')
+
+    _render_box_build_record_view(record)
+
+    export_col1, export_col2 = st.columns([1, 2])
+    with export_col1:
+        generate_pdf = st.button('Generate PDF report', use_container_width=True)
+    with export_col2:
+        st.caption('Uses the original bb_report.py PDF generator and saves the file to a temporary folder for download.')
+
+    if generate_pdf:
+        try:
+            tmp_dir = Path(tempfile.mkdtemp(prefix='boxbuild_report_'))
+            original_input = __builtins__.input
+            def _fake_input(prompt=''):
+                return 'Y'
+            __builtins__.input = _fake_input
+            try:
+                bb.create_report(items, query_used, selected_index, tmp_dir)
+            finally:
+                __builtins__.input = original_input
+
+            pdf_files = sorted(tmp_dir.glob('*.pdf'))
+            if not pdf_files:
+                st.error('No PDF was generated.')
+            else:
+                pdf_path = pdf_files[0]
+                st.download_button(
+                    'Download generated PDF',
+                    data=pdf_path.read_bytes(),
+                    file_name=pdf_path.name,
+                    mime='application/pdf',
+                    use_container_width=True,
+                )
+        except Exception as e:
+            st.exception(e)
+
 # -----------------------------
 # App
 # -----------------------------
@@ -412,6 +673,7 @@ tabs = st.tabs([
     'Simple Plot',
     'Derate Summary',
     'Arduino Sync',
+    'Box Build Report',
 ])
 
 with tabs[0]:
@@ -426,3 +688,5 @@ with tabs[4]:
     tab_derate_summary()
 with tabs[5]:
     tab_arduino_sync()
+with tabs[6]:
+    tab_box_build_report()
