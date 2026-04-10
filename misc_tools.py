@@ -5887,5 +5887,11 @@ elif active_workspace == 'Box Build Report':
     render_box_build_workspace()
 elif active_workspace == 'SOS Inventory':
     render_sos_workspace()
-else:
+elif active_workspace == 'Weekly Production':
     render_weekly_production_workspace()
+elif active_workspace == 'MRP':
+    render_mrp_tab()
+else:
+    st.session_state['active_workspace'] = 'Home'
+    st.warning(f"Unknown workspace '{active_workspace}'. Returning to Home.")
+    st.rerun()
