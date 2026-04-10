@@ -66,8 +66,21 @@ PAIR_RE = re.compile(r'^(RX|TX|INF)_(\d{4})\.(CSV|TML)$', re.IGNORECASE)
 
 
 def render_mrp_tab_lazy():
-    from mrp_module import render_mrp_tab
-    render_mrp_tab()
+    try:
+        from mrp_module import render_mrp_tab
+        token = get_sos_access_token()
+        if not token:
+            st.error("MRP failed: could not get SOS access token.")
+            return
+
+        try:
+            client = SOSReadonlyClient(access_token=token)
+        except TypeError:
+            client = SOSReadonlyClient(token)
+
+        render_mrp_tab(client)
+    except Exception as e:
+        st.error(f"MRP failed: {e}")
 
 
 # -----------------------------
