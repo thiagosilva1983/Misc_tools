@@ -5085,7 +5085,7 @@ def render_box_build_workspace():
         )
 
 def render_workspace_selector():
-    options = ['Home', 'Label Studio', 'Box Build Report', 'SOS Inventory', 'Weekly Production']
+    options = ['Home', 'Label Studio', 'Box Build Report', 'SOS Inventory', 'Weekly Production', 'MRP']
     default_workspace = st.session_state.get('active_workspace', 'Home')
     selected = st.radio(
         'Workspace',
