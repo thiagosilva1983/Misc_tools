@@ -1,0 +1,7 @@
+streamlit
+tzlocal
+boto3
+pandas
+numpy
+matplotlib
+pytz
