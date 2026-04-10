@@ -444,15 +444,11 @@ def load_box_build_module():
 
     module_path = next((c for c in candidates if c.exists() and c.is_file()), None)
     if module_path is None:
-        searched = '
-'.join(f'- {c}' for c in candidates)
+        searched = '\n'.join(f'- {c}' for c in candidates)
         raise FileNotFoundError(
             'Could not find bb_report.py. Put bb_report.py in the same folder as this Streamlit app, '
-            'or set environment variable BOX_BUILD_REPORT_PATH to its full path.
-
-'
-            f'Searched:
-{searched}'
+            'or set environment variable BOX_BUILD_REPORT_PATH to its full path.\n\n'
+            f'Searched:\n{searched}'
         )
 
     spec = importlib.util.spec_from_file_location('bb_report_module', module_path)
