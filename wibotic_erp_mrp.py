@@ -1,15 +1,34 @@
-# mrp_module_version_C.py
-# VERSION C
+# VERSION D
 
 import pandas as pd
 import streamlit as st
 from collections import defaultdict
+import sys
+import importlib
+
+
+def _get_app_module():
+    """Resolve the already-running main Streamlit app module without re-importing it.
+    This avoids circular-import side effects like duplicate widget keys.
+    """
+    main_mod = sys.modules.get("__main__")
+    if main_mod and hasattr(main_mod, "get_sos_access_token") and hasattr(main_mod, "SOSReadonlyClient"):
+        return main_mod
+
+    # Fallback only if the app is imported as a module in some environments.
+    misc_mod = sys.modules.get("misc_tools")
+    if misc_mod and hasattr(misc_mod, "get_sos_access_token") and hasattr(misc_mod, "SOSReadonlyClient"):
+        return misc_mod
+
+    # Last resort: import once.
+    misc_mod = importlib.import_module("misc_tools")
+    return misc_mod
 
 
 def get_sos_client():
-    from misc_tools import get_sos_access_token, SOSReadonlyClient
-    token = get_sos_access_token()
-    return SOSReadonlyClient(token)
+    app = _get_app_module()
+    token = app.get_sos_access_token()
+    return app.SOSReadonlyClient(token)
 
 
 def get_open_sales_orders():
@@ -107,11 +126,11 @@ def render_mrp_tab():
 
     a, b = st.columns([1, 1])
     with a:
-        if st.button("Run Live MRP", use_container_width=True, key="mrp_refresh_live_vc"):
+        if st.button("Run Live MRP", use_container_width=True, key="mrp_refresh_live_vd"):
             st.session_state["mrp_df"] = build_mrp_table()
 
     with b:
-        if st.button("Clear MRP", use_container_width=True, key="mrp_clear_live_vc"):
+        if st.button("Clear MRP", use_container_width=True, key="mrp_clear_live_vd"):
             st.session_state.pop("mrp_df", None)
             st.rerun()
 
@@ -126,8 +145,8 @@ def render_mrp_tab():
     st.download_button(
         "Download MRP CSV",
         data=df.to_csv(index=False),
-        file_name="mrp_report_version_C.csv",
+        file_name="mrp_report_version_D.csv",
         mime="text/csv",
         use_container_width=True,
-        key="mrp_download_csv_vc",
+        key="mrp_download_csv_vd",
     )
