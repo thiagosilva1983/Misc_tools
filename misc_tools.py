@@ -1,5 +1,4 @@
 # Rev AW - production_AW_full.py
-from mrp_module import render_mrp_tab
 import io
 import base64
 import json
@@ -63,6 +62,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 PAIR_RE = re.compile(r'^(RX|TX|INF)_(\d{4})\.(CSV|TML)$', re.IGNORECASE)
+
+
+def render_mrp_tab_lazy():
+    from mrp_module import render_mrp_tab
+    render_mrp_tab()
 
 
 # -----------------------------
@@ -4235,6 +4239,18 @@ def render_weekly_production_workspace():
     st.caption('Use the full SOS Inventory workspace for detailed inventory investigation and deep sales-order checks.')
     st.caption('Weekly Production now prefers manual refresh for stability while you edit priorities.')
 
+    weekly_section = st.radio(
+        'Weekly Production view',
+        ['Board', 'MRP'],
+        horizontal=True,
+        key='weekly_production_view_mode',
+        label_visibility='collapsed',
+    )
+    if weekly_section == 'MRP':
+        st.caption('MRP is embedded inside Weekly Production in this version.')
+        render_mrp_tab_lazy()
+        return
+
     st.caption(f"Workflow state backend: {weekly_gsheet_backend_name()}")
     if st.session_state.get("weekly_is_refreshing", False):
         st.warning("Weekly board is updating from SOS...")
@@ -4776,7 +4792,8 @@ def render_home_workspace():
             st.rerun()
     with c6:
         if st.button('Open MRP', key='home_open_mrp', use_container_width=True):
-            st.session_state['active_workspace'] = 'MRP'
+            st.session_state['active_workspace'] = 'Weekly Production'
+            st.session_state['weekly_production_view_mode'] = 'MRP'
             st.rerun()
 
 
@@ -5085,7 +5102,7 @@ def render_box_build_workspace():
         )
 
 def render_workspace_selector():
-    options = ['Home', 'Label Studio', 'Box Build Report', 'SOS Inventory', 'Weekly Production', 'MRP']
+    options = ['Home', 'Label Studio', 'Box Build Report', 'SOS Inventory', 'Weekly Production']
     default_workspace = st.session_state.get('active_workspace', 'Home')
     selected = st.radio(
         'Workspace',
@@ -5878,6 +5895,10 @@ def render_arduino_workspace():
 inject_branding()
 render_app_header()
 active_workspace = render_workspace_selector()
+if active_workspace == 'MRP':
+    st.session_state['active_workspace'] = 'Weekly Production'
+    st.session_state['weekly_production_view_mode'] = 'MRP'
+    st.rerun()
 
 if active_workspace == 'Home':
     render_home_workspace()
@@ -5889,8 +5910,6 @@ elif active_workspace == 'SOS Inventory':
     render_sos_workspace()
 elif active_workspace == 'Weekly Production':
     render_weekly_production_workspace()
-elif active_workspace == 'MRP':
-    render_mrp_tab()
 else:
     st.session_state['active_workspace'] = 'Home'
     st.warning(f"Unknown workspace '{active_workspace}'. Returning to Home.")
