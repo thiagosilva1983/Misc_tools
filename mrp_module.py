@@ -1,266 +1,417 @@
 # mrp_module.py
-# Version E
-#
-# Purpose:
-# - Render the MRP tab inside the Weekly Production workspace
-# - Avoid circular imports with misc_tools.py
-# - Use bridge injection from misc_tools.py for SOS access
-#
-# How it works:
-# 1) misc_tools.py imports render_mrp_tab and register_mrp_bridge from this file
-# 2) misc_tools.py calls register_mrp_bridge(get_sos_access_token, SOSReadonlyClient, get_open_sales_orders_for_mrp)
-# 3) render_mrp_tab() can then use those functions/classes without importing misc_tools.py
+# REV F - stable MRP module for Weekly Production integration
 
-from __future__ import annotations
-
-from typing import Callable, Any, Dict, List, Optional
-import traceback
-
-import pandas as pd
 import streamlit as st
+import pandas as pd
 
-_MRP_BRIDGE: Dict[str, Any] = {
-    "get_sos_access_token": None,
-    "SOSReadonlyClient": None,
-    "get_open_sales_orders_for_mrp": None,
-}
 
-def register_mrp_bridge(
-    get_sos_access_token: Optional[Callable] = None,
-    SOSReadonlyClient: Optional[type] = None,
-    get_open_sales_orders_for_mrp: Optional[Callable] = None,
-) -> None:
-    if get_sos_access_token is not None:
-        _MRP_BRIDGE["get_sos_access_token"] = get_sos_access_token
-    if SOSReadonlyClient is not None:
-        _MRP_BRIDGE["SOSReadonlyClient"] = SOSReadonlyClient
-    if get_open_sales_orders_for_mrp is not None:
-        _MRP_BRIDGE["get_open_sales_orders_for_mrp"] = get_open_sales_orders_for_mrp
+def _safe_float(value, default=0.0):
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except Exception:
+        return default
 
-def _bridge_ready() -> bool:
-    return (
-        _MRP_BRIDGE["get_sos_access_token"] is not None
-        and _MRP_BRIDGE["SOSReadonlyClient"] is not None
-    )
 
-def get_sos_client():
-    if not _bridge_ready():
-        raise RuntimeError(
-            "MRP bridge not registered. In misc_tools.py, call register_mrp_bridge(...) "
-            "after get_sos_access_token and SOSReadonlyClient are defined."
-        )
-
-    token_fn = _MRP_BRIDGE["get_sos_access_token"]
-    client_cls = _MRP_BRIDGE["SOSReadonlyClient"]
-
-    token = token_fn()
-    if not token:
-        raise RuntimeError("SOS access token is empty or unavailable.")
-
-    return client_cls(token)
-
-def get_open_sales_orders() -> List[dict]:
-    helper = _MRP_BRIDGE.get("get_open_sales_orders_for_mrp")
-    if helper is not None:
-        orders = helper()
-        return orders or []
-
-    client = get_sos_client()
-
+def get_open_sales_orders(client):
     candidate_methods = [
         "get_open_sales_orders",
+        "fetch_open_sales_orders",
         "list_open_sales_orders",
-        "search_sales_orders",
         "get_sales_orders",
-        "list_sales_orders",
+        "fetch_sales_orders",
     ]
+
+    last_error = None
 
     for method_name in candidate_methods:
         method = getattr(client, method_name, None)
         if callable(method):
             try:
                 result = method()
+                if result is None:
+                    return []
                 if isinstance(result, list):
                     return result
                 if isinstance(result, dict):
-                    for key in ("data", "items", "results", "salesorders", "sales_orders"):
+                    for key in ["data", "items", "salesorders", "sales_orders", "results"]:
                         if isinstance(result.get(key), list):
-                            return result.get(key) or []
-            except TypeError:
-                continue
-            except Exception:
-                continue
+                            return result.get(key)
+                return []
+            except Exception as e:
+                last_error = e
+
+    if last_error:
+        raise last_error
 
     raise RuntimeError(
-        "Could not fetch open sales orders. Provide get_open_sales_orders_for_mrp "
-        "from misc_tools.py via register_mrp_bridge(...)."
+        "Could not find a compatible method in SOSReadonlyClient to fetch sales orders."
     )
 
-def _safe_get(d: dict, *keys, default=None):
-    cur = d
-    for key in keys:
-        if isinstance(cur, dict) and key in cur:
-            cur = cur[key]
-        else:
-            return default
-    return cur
 
-def _extract_order_header(order: dict) -> dict:
-    so_number = (
-        _safe_get(order, "salesorder_number")
-        or _safe_get(order, "sales_order_number")
-        or _safe_get(order, "number")
-        or _safe_get(order, "doc_number")
-        or _safe_get(order, "reference_number")
-        or "UNKNOWN-SO"
-    )
+def get_bill_of_materials_for_product(client, item_id=None, sku=None, name=None):
+    candidate_methods = [
+        "get_product_bom",
+        "fetch_product_bom",
+        "get_bom",
+        "fetch_bom",
+        "get_bill_of_materials",
+    ]
 
-    customer = (
-        _safe_get(order, "customer_name")
-        or _safe_get(order, "customer", "name")
-        or _safe_get(order, "customer")
-        or ""
-    )
+    last_error = None
 
-    status = (
-        _safe_get(order, "status")
-        or _safe_get(order, "salesorder_status")
-        or ""
-    )
+    for method_name in candidate_methods:
+        method = getattr(client, method_name, None)
+        if callable(method):
+            try:
+                if item_id:
+                    result = method(item_id=item_id)
+                elif sku:
+                    result = method(sku=sku)
+                elif name:
+                    result = method(name=name)
+                else:
+                    return []
 
-    return {
-        "so_number": str(so_number),
-        "customer": str(customer) if customer is not None else "",
-        "status": str(status) if status is not None else "",
-    }
+                if result is None:
+                    return []
+                if isinstance(result, list):
+                    return result
+                if isinstance(result, dict):
+                    for key in ["data", "items", "bom", "components", "results"]:
+                        if isinstance(result.get(key), list):
+                            return result.get(key)
+                return []
+            except Exception as e:
+                last_error = e
 
-def _extract_lines(order: dict) -> list[dict]:
-    lines = (
-        _safe_get(order, "line_items")
-        or _safe_get(order, "items")
-        or _safe_get(order, "lines")
-        or []
-    )
+    if last_error:
+        return []
 
-    normalized = []
-    for idx, line in enumerate(lines, start=1):
-        sku = (
-            _safe_get(line, "sku")
-            or _safe_get(line, "item_code")
-            or _safe_get(line, "part_number")
-            or _safe_get(line, "name")
-            or _safe_get(line, "item_name")
-            or f"LINE-{idx}"
-        )
+    return []
 
-        description = (
-            _safe_get(line, "description")
-            or _safe_get(line, "item_name")
-            or _safe_get(line, "name")
+
+def get_item_stock(client, item_id=None, sku=None, name=None):
+    candidate_methods = [
+        "get_item_stock",
+        "fetch_item_stock",
+        "get_inventory_item",
+        "fetch_inventory_item",
+        "get_item_by_sku",
+        "fetch_item_by_sku",
+    ]
+
+    last_error = None
+
+    for method_name in candidate_methods:
+        method = getattr(client, method_name, None)
+        if callable(method):
+            try:
+                if item_id:
+                    result = method(item_id=item_id)
+                elif sku:
+                    result = method(sku=sku)
+                elif name:
+                    result = method(name=name)
+                else:
+                    return {}
+
+                if result is None:
+                    return {}
+                if isinstance(result, dict):
+                    return result
+                if isinstance(result, list) and result:
+                    return result[0]
+                return {}
+            except Exception as e:
+                last_error = e
+
+    if last_error:
+        return {}
+
+    return {}
+
+
+def normalize_sales_order_rows(orders):
+    rows = []
+
+    for so in orders or []:
+        so_number = (
+            so.get("SalesOrderNumber")
+            or so.get("salesordernumber")
+            or so.get("Sales Order Number")
+            or so.get("DocumentNumber")
+            or so.get("document_number")
+            or so.get("SONumber")
+            or so.get("Number")
+            or so.get("number")
             or ""
         )
 
-        qty = (
-            _safe_get(line, "quantity")
-            or _safe_get(line, "qty")
-            or _safe_get(line, "ordered_quantity")
-            or 0
+        customer = (
+            so.get("CustomerName")
+            or so.get("customername")
+            or so.get("Customer")
+            or so.get("customer")
+            or ""
         )
 
-        try:
-            qty = float(qty)
-        except Exception:
-            qty = 0
+        details = (
+            so.get("Details")
+            or so.get("details")
+            or so.get("LineItems")
+            or so.get("lineitems")
+            or so.get("items")
+            or []
+        )
 
-        normalized.append({
-            "sku": str(sku),
-            "description": str(description) if description is not None else "",
-            "qty": qty,
-        })
+        for line in details or []:
+            sku = (
+                line.get("SKU")
+                or line.get("sku")
+                or line.get("ItemCode")
+                or line.get("itemcode")
+                or line.get("PartNumber")
+                or line.get("partnumber")
+                or ""
+            )
 
-    return normalized
+            description = (
+                line.get("Description")
+                or line.get("description")
+                or line.get("Name")
+                or line.get("name")
+                or ""
+            )
 
-def build_mrp_table() -> pd.DataFrame:
-    orders = get_open_sales_orders()
+            item_id = (
+                line.get("ItemID")
+                or line.get("itemid")
+                or line.get("ID")
+                or line.get("id")
+            )
 
-    rows = []
-    for order in orders:
-        header = _extract_order_header(order)
-        for line in _extract_lines(order):
-            rows.append({
-                "Sales Order": header["so_number"],
-                "Customer": header["customer"],
-                "SO Status": header["status"],
-                "Item": line["sku"],
-                "Description": line["description"],
-                "Required Qty": line["qty"],
-            })
+            qty = (
+                line.get("Quantity")
+                or line.get("quantity")
+                or line.get("Qty")
+                or line.get("qty")
+                or 0
+            )
 
-    if not rows:
-        return pd.DataFrame(columns=[
-            "Sales Order", "Customer", "SO Status", "Item", "Description", "Required Qty"
-        ])
+            qty = _safe_float(qty, 0)
+            if qty <= 0:
+                continue
 
-    df = pd.DataFrame(rows)
-    df["Required Qty"] = pd.to_numeric(df["Required Qty"], errors="coerce").fillna(0)
-    return df.sort_values(["Sales Order", "Item"]).reset_index(drop=True)
+            rows.append(
+                {
+                    "so_number": so_number,
+                    "customer": customer,
+                    "parent_sku": sku,
+                    "parent_description": description,
+                    "parent_item_id": item_id,
+                    "build_qty": qty,
+                }
+            )
 
-def render_mrp_tab() -> None:
-    st.subheader("MRP")
-    st.caption("Material requirements view based on open Sales Orders from SOS.")
+    return rows
 
-    if "mrp_df" not in st.session_state:
-        st.session_state["mrp_df"] = pd.DataFrame()
 
-    c1, c2 = st.columns([1, 3])
+def build_mrp_table(client):
+    orders = get_open_sales_orders(client)
+    normalized_rows = normalize_sales_order_rows(orders)
+    mrp_rows = []
 
-    with c1:
-        refresh = st.button("Refresh MRP", key="mrp_refresh_btn", use_container_width=True)
+    for row in normalized_rows:
+        so_number = row["so_number"]
+        customer = row["customer"]
+        parent_sku = row["parent_sku"]
+        parent_description = row["parent_description"]
+        parent_item_id = row["parent_item_id"]
+        build_qty = row["build_qty"]
 
-    if refresh:
-        try:
-            st.session_state["mrp_df"] = build_mrp_table()
-            st.success("MRP refreshed.")
-        except Exception as exc:
-            st.error(f"MRP failed: {exc}")
-            with st.expander("Technical details"):
-                st.code(traceback.format_exc())
+        bom_lines = get_bill_of_materials_for_product(
+            client,
+            item_id=parent_item_id,
+            sku=parent_sku,
+            name=parent_description,
+        )
+
+        if not bom_lines:
+            mrp_rows.append(
+                {
+                    "Sales Order": so_number,
+                    "Customer": customer,
+                    "Parent SKU": parent_sku,
+                    "Parent Description": parent_description,
+                    "Component SKU": "",
+                    "Component Description": "No BOM found",
+                    "Qty per Parent": "",
+                    "Required Qty": "",
+                    "On Hand": "",
+                    "Available": "",
+                    "Shortage": "",
+                    "Status": "NO BOM",
+                }
+            )
+            continue
+
+        for comp in bom_lines:
+            comp_sku = (
+                comp.get("SKU")
+                or comp.get("sku")
+                or comp.get("ItemCode")
+                or comp.get("itemcode")
+                or comp.get("PartNumber")
+                or comp.get("partnumber")
+                or ""
+            )
+
+            comp_desc = (
+                comp.get("Description")
+                or comp.get("description")
+                or comp.get("Name")
+                or comp.get("name")
+                or ""
+            )
+
+            comp_item_id = (
+                comp.get("ItemID")
+                or comp.get("itemid")
+                or comp.get("ID")
+                or comp.get("id")
+            )
+
+            qty_per = (
+                comp.get("Quantity")
+                or comp.get("quantity")
+                or comp.get("Qty")
+                or comp.get("qty")
+                or 0
+            )
+            qty_per = _safe_float(qty_per, 0)
+            required_qty = build_qty * qty_per
+
+            stock = get_item_stock(
+                client,
+                item_id=comp_item_id,
+                sku=comp_sku,
+                name=comp_desc,
+            )
+
+            on_hand = _safe_float(
+                stock.get("OnHand")
+                or stock.get("onhand")
+                or stock.get("QuantityOnHand")
+                or stock.get("quantityonhand")
+                or stock.get("AvailableQuantity")
+                or stock.get("availablequantity")
+                or 0,
+                0,
+            )
+
+            available = _safe_float(
+                stock.get("Available")
+                or stock.get("available")
+                or stock.get("AvailableForSale")
+                or stock.get("availableforsale")
+                or on_hand,
+                on_hand,
+            )
+
+            shortage = max(required_qty - available, 0)
+            status = "OK" if shortage <= 0 else "SHORT"
+
+            mrp_rows.append(
+                {
+                    "Sales Order": so_number,
+                    "Customer": customer,
+                    "Parent SKU": parent_sku,
+                    "Parent Description": parent_description,
+                    "Component SKU": comp_sku,
+                    "Component Description": comp_desc,
+                    "Qty per Parent": qty_per,
+                    "Required Qty": required_qty,
+                    "On Hand": on_hand,
+                    "Available": available,
+                    "Shortage": shortage,
+                    "Status": status,
+                }
+            )
+
+    df = pd.DataFrame(mrp_rows)
+
+    if df.empty:
+        return pd.DataFrame(
+            columns=[
+                "Sales Order",
+                "Customer",
+                "Parent SKU",
+                "Parent Description",
+                "Component SKU",
+                "Component Description",
+                "Qty per Parent",
+                "Required Qty",
+                "On Hand",
+                "Available",
+                "Shortage",
+                "Status",
+            ]
+        )
+
+    preferred_cols = [
+        "Sales Order",
+        "Customer",
+        "Parent SKU",
+        "Parent Description",
+        "Component SKU",
+        "Component Description",
+        "Qty per Parent",
+        "Required Qty",
+        "On Hand",
+        "Available",
+        "Shortage",
+        "Status",
+    ]
+    return df[[c for c in preferred_cols if c in df.columns]]
+
+
+def render_mrp_tab(client):
+    st.subheader("MRP - Materials Planning")
+    st.caption("Runs against live SOS data using the same authenticated SOS client as Weekly Production.")
+
+    c1, c2 = st.columns(2)
+    run_clicked = c1.button("Run MRP", use_container_width=True, key="mrp_run_btn")
+    refresh_clicked = c2.button("Refresh MRP Data", use_container_width=True, key="mrp_refresh_btn")
+
+    if run_clicked or refresh_clicked:
+        with st.spinner("Running MRP from SOS..."):
+            try:
+                st.session_state["mrp_df"] = build_mrp_table(client)
+                st.success("MRP loaded successfully.")
+            except Exception as e:
+                st.error(f"MRP failed: {e}")
 
     df = st.session_state.get("mrp_df", pd.DataFrame())
 
     if df is None or df.empty:
-        st.info("No MRP data loaded yet. Click Refresh MRP.")
+        st.info("No MRP data loaded yet. Click Run MRP.")
         return
 
-    col1, col2, col3 = st.columns(3)
+    if "Status" in df.columns:
+        x1, x2, x3 = st.columns(3)
+        x1.metric("Rows", len(df))
+        x2.metric("Shortages", int((df["Status"] == "SHORT").sum()))
+        x3.metric("No BOM", int((df["Status"] == "NO BOM").sum()))
 
-    so_options = ["All"] + sorted(df["Sales Order"].dropna().astype(str).unique().tolist())
-    item_options = ["All"] + sorted(df["Item"].dropna().astype(str).unique().tolist())
-    cust_options = ["All"] + sorted(df["Customer"].dropna().astype(str).unique().tolist())
+    st.dataframe(df, use_container_width=True, height=520)
 
-    with col1:
-        selected_so = st.selectbox("Sales Order", so_options, key="mrp_filter_so")
-    with col2:
-        selected_item = st.selectbox("Item", item_options, key="mrp_filter_item")
-    with col3:
-        selected_customer = st.selectbox("Customer", cust_options, key="mrp_filter_customer")
-
-    filtered = df.copy()
-    if selected_so != "All":
-        filtered = filtered[filtered["Sales Order"].astype(str) == selected_so]
-    if selected_item != "All":
-        filtered = filtered[filtered["Item"].astype(str) == selected_item]
-    if selected_customer != "All":
-        filtered = filtered[filtered["Customer"].astype(str) == selected_customer]
-
-    st.dataframe(filtered, use_container_width=True, hide_index=True)
-
-    csv_data = filtered.to_csv(index=False).encode("utf-8")
+    csv_data = df.to_csv(index=False).encode("utf-8")
     st.download_button(
         "Download MRP CSV",
         data=csv_data,
-        file_name="mrp_export.csv",
+        file_name="mrp_output.csv",
         mime="text/csv",
-        key="mrp_download_csv_btn",
-        use_container_width=True,
+        key="mrp_download_csv",
     )
