@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title='WiBotic Tool', layout='wide')
+st.set_page_config(page_title='WiBotic Tool O', layout='wide')
 
 PAIR_RE = re.compile(r'^(RX|TX|INF)_(\d{4})\.(CSV|TML)$', re.IGNORECASE)
 
@@ -206,10 +206,23 @@ def make_line_chart(df, x_col, y_cols, height=360):
 # Tabs
 # -----------------------------
 def tab_home():
-    st.subheader('')
+    st.subheader('Tool O Home')
     st.markdown(
         """
-        
+        This version keeps the misc engineering tools together in one app.
+
+        Included:
+        - RF Calculator
+        - Capacitance Bank
+        - Simple Plot Explorer
+        - Derate Summary
+        - Arduino Sync
+
+        Removed:
+        - Weekly Production
+        - SOS Inventory
+        - Label app
+        - Google Sheets
         """
     )
 
@@ -413,8 +426,38 @@ def tab_arduino_sync():
 @st.cache_resource(show_spinner=False)
 def load_box_build_module():
     import importlib.util
-    module_path = Path(__file__).with_name('bb_report.py')
+    import os
+
+    env_path = os.environ.get('BOX_BUILD_REPORT_PATH', '').strip()
+    candidates = []
+    if env_path:
+        candidates.append(Path(env_path))
+
+    here = Path(__file__).resolve().parent
+    candidates.extend([
+        here / 'bb_report.py',
+        Path.cwd() / 'bb_report.py',
+        here.parent / 'bb_report.py',
+        here / 'misc_tools' / 'bb_report.py',
+        here.parent / 'misc_tools' / 'bb_report.py',
+    ])
+
+    module_path = next((c for c in candidates if c.exists() and c.is_file()), None)
+    if module_path is None:
+        searched = '
+'.join(f'- {c}' for c in candidates)
+        raise FileNotFoundError(
+            'Could not find bb_report.py. Put bb_report.py in the same folder as this Streamlit app, '
+            'or set environment variable BOX_BUILD_REPORT_PATH to its full path.
+
+'
+            f'Searched:
+{searched}'
+        )
+
     spec = importlib.util.spec_from_file_location('bb_report_module', module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f'Could not load module spec for {module_path}')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
