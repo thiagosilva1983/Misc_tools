@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title='WiBotic Tool O', layout='wide')
+st.set_page_config(page_title='WiBotic Tool', layout='wide')
 
 PAIR_RE = re.compile(r'^(RX|TX|INF)_(\d{4})\.(CSV|TML)$', re.IGNORECASE)
 
@@ -206,23 +206,10 @@ def make_line_chart(df, x_col, y_cols, height=360):
 # Tabs
 # -----------------------------
 def tab_home():
-    st.subheader('Tool O Home')
+    st.subheader('')
     st.markdown(
         """
-        This version keeps the misc engineering tools together in one app.
-
-        Included:
-        - RF Calculator
-        - Capacitance Bank
-        - Simple Plot Explorer
-        - Derate Summary
-        - Arduino Sync
-
-        Removed:
-        - Weekly Production
-        - SOS Inventory
-        - Label app
-        - Google Sheets
+        
         """
     )
 
