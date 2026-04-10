@@ -1,4 +1,5 @@
 # Rev AW - production_AW_full.py
+from mrp_module import render_mrp_tab
 import io
 import base64
 import json
@@ -4748,6 +4749,7 @@ def render_home_workspace():
     st.markdown("### Home")
     st.caption("Quick launch for production workflows and engineering tools.")
     misc_tools_url = str(st.secrets.get('MISC_TOOLS_URL', 'https://misctools-lhmvuc9atxsc4mibegrhnu.streamlit.app/')).strip()
+
     c1, c2, c3 = st.columns(3)
     with c1:
         st.link_button('Open Misc Tools', misc_tools_url, use_container_width=True)
@@ -4763,7 +4765,7 @@ def render_home_workspace():
             st.rerun()
         st.caption('Search Box Build records by serial, MAC, or sales order shipment serials.')
 
-    c4, c5 = st.columns(2)
+    c4, c5, c6 = st.columns(3)
     with c4:
         if st.button('Open SOS Inventory', key='home_open_sos', use_container_width=True):
             st.session_state['active_workspace'] = 'SOS Inventory'
@@ -4771,6 +4773,10 @@ def render_home_workspace():
     with c5:
         if st.button('Open Weekly Production', key='home_open_weekly', use_container_width=True):
             st.session_state['active_workspace'] = 'Weekly Production'
+            st.rerun()
+    with c6:
+        if st.button('Open MRP', key='home_open_mrp', use_container_width=True):
+            st.session_state['active_workspace'] = 'MRP'
             st.rerun()
 
 
