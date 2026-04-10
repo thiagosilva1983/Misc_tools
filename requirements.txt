@@ -15,5 +15,4 @@ streamlit-autorefresh
 tzlocal
 boto3
 pytz
-wibotic_erp_mrp.py
-mrp_module.py
+
