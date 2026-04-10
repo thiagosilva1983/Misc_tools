@@ -5,6 +5,7 @@ import json
 import re
 import math
 import tarfile
+import inspect
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -4772,29 +4773,23 @@ def render_home_workspace():
         st.caption('RF tools, plot tools, derate summary, and Arduino sync.')
     with c2:
         if st.button('Open Label Studio', key='home_open_label', use_container_width=True):
-            st.session_state['active_workspace'] = 'Label Studio'
-            st.rerun()
+            go_to_workspace('Label Studio')
         st.caption('Fetch shipments from SOS and generate customer labels.')
     with c3:
         if st.button('Open Box Build Report', key='home_open_boxbuild', use_container_width=True):
-            st.session_state['active_workspace'] = 'Box Build Report'
-            st.rerun()
+            go_to_workspace('Box Build Report')
         st.caption('Search Box Build records by serial, MAC, or sales order shipment serials.')
 
     c4, c5, c6 = st.columns(3)
     with c4:
         if st.button('Open SOS Inventory', key='home_open_sos', use_container_width=True):
-            st.session_state['active_workspace'] = 'SOS Inventory'
-            st.rerun()
+            go_to_workspace('SOS Inventory')
     with c5:
         if st.button('Open Weekly Production', key='home_open_weekly', use_container_width=True):
-            st.session_state['active_workspace'] = 'Weekly Production'
-            st.rerun()
+            go_to_workspace('Weekly Production', weekly_view='Board')
     with c6:
         if st.button('Open MRP', key='home_open_mrp', use_container_width=True):
-            st.session_state['active_workspace'] = 'Weekly Production'
-            st.session_state['weekly_production_view_mode'] = 'MRP'
-            st.rerun()
+            go_to_workspace('MRP', weekly_view='MRP')
 
 
 @st.cache_resource(show_spinner=False)
@@ -5101,20 +5096,38 @@ def render_box_build_workspace():
             key='boxbuild_download_pdf_main',
         )
 
+
+def init_workspace_state():
+    if 'active_workspace' not in st.session_state:
+        st.session_state['active_workspace'] = 'Home'
+
+
+def go_to_workspace(workspace_name: str, weekly_view: Optional[str] = None):
+    st.session_state['active_workspace'] = workspace_name
+    if weekly_view is not None:
+        st.session_state['weekly_production_view_mode'] = weekly_view
+    st.rerun()
+
+
+
 def render_workspace_selector():
-    options = ['Home', 'Label Studio', 'Box Build Report', 'SOS Inventory', 'Weekly Production']
-    default_workspace = st.session_state.get('active_workspace', 'Home')
+    options = ['Home', 'Label Studio', 'Box Build Report', 'SOS Inventory', 'Weekly Production', 'MRP']
+    current_workspace = st.session_state.get('active_workspace', 'Home')
+    default_index = options.index(current_workspace) if current_workspace in options else 0
+
     selected = st.radio(
         'Workspace',
         options,
-        index=options.index(default_workspace) if default_workspace in options else 0,
+        index=default_index,
         horizontal=True,
-        key='active_workspace',
+        key='workspace_selector_radio_version_a',
         label_visibility='collapsed',
     )
+
+    if selected != st.session_state.get('active_workspace'):
+        st.session_state['active_workspace'] = selected
+
     return selected
-
-
 
 
 def render_label_tab():
@@ -5894,11 +5907,8 @@ def render_arduino_workspace():
 
 inject_branding()
 render_app_header()
+init_workspace_state()
 active_workspace = render_workspace_selector()
-if active_workspace == 'MRP':
-    st.session_state['active_workspace'] = 'Weekly Production'
-    st.session_state['weekly_production_view_mode'] = 'MRP'
-    st.rerun()
 
 if active_workspace == 'Home':
     render_home_workspace()
@@ -5909,8 +5919,11 @@ elif active_workspace == 'Box Build Report':
 elif active_workspace == 'SOS Inventory':
     render_sos_workspace()
 elif active_workspace == 'Weekly Production':
+    if 'weekly_production_view_mode' not in st.session_state:
+        st.session_state['weekly_production_view_mode'] = 'Board'
+    render_weekly_production_workspace()
+elif active_workspace == 'MRP':
+    st.session_state['weekly_production_view_mode'] = 'MRP'
     render_weekly_production_workspace()
 else:
-    st.session_state['active_workspace'] = 'Home'
-    st.warning(f"Unknown workspace '{active_workspace}'. Returning to Home.")
-    st.rerun()
+    go_to_workspace('Home')
