@@ -1,25 +1,8 @@
 # mrp_module.py
-# REV E
+# REV F
+
 import streamlit as st
 import pandas as pd
-
-
-def get_sos_client():
-    import __main__
-
-    get_sos_access_token = getattr(__main__, "get_sos_access_token", None)
-    SOSReadonlyClient = getattr(__main__, "SOSReadonlyClient", None)
-
-    if get_sos_access_token is None or SOSReadonlyClient is None:
-        raise RuntimeError(
-            "Could not access get_sos_access_token or SOSReadonlyClient from the main Streamlit app."
-        )
-
-    token = get_sos_access_token()
-    if not token:
-        raise RuntimeError("Unable to get SOS access token.")
-
-    return SOSReadonlyClient(access_token=token)
 
 
 def _safe_float(value, default=0.0):
@@ -31,19 +14,7 @@ def _safe_float(value, default=0.0):
         return default
 
 
-def _safe_int(value, default=0):
-    try:
-        if value is None or value == "":
-            return default
-        return int(float(value))
-    except Exception:
-        return default
-
-
-def get_open_sales_orders():
-    client = get_sos_client()
-
-    # Tenta alguns nomes comuns de função, caso seu client tenha nome diferente
+def get_open_sales_orders(client):
     candidate_methods = [
         "get_open_sales_orders",
         "fetch_open_sales_orders",
@@ -79,9 +50,7 @@ def get_open_sales_orders():
     )
 
 
-def get_bill_of_materials_for_product(item_id=None, sku=None, name=None):
-    client = get_sos_client()
-
+def get_bill_of_materials_for_product(client, item_id=None, sku=None, name=None):
     candidate_methods = [
         "get_product_bom",
         "fetch_product_bom",
@@ -96,13 +65,10 @@ def get_bill_of_materials_for_product(item_id=None, sku=None, name=None):
         method = getattr(client, method_name, None)
         if callable(method):
             try:
-                # tenta por item_id
                 if item_id:
                     result = method(item_id=item_id)
-                # tenta por sku
                 elif sku:
                     result = method(sku=sku)
-                # tenta por nome
                 elif name:
                     result = method(name=name)
                 else:
@@ -126,9 +92,7 @@ def get_bill_of_materials_for_product(item_id=None, sku=None, name=None):
     return []
 
 
-def get_item_stock(item_id=None, sku=None, name=None):
-    client = get_sos_client()
-
+def get_item_stock(client, item_id=None, sku=None, name=None):
     candidate_methods = [
         "get_item_stock",
         "fetch_item_stock",
@@ -250,8 +214,8 @@ def normalize_sales_order_rows(orders):
     return rows
 
 
-def build_mrp_table():
-    orders = get_open_sales_orders()
+def build_mrp_table(client):
+    orders = get_open_sales_orders(client)
     so_rows = normalize_sales_order_rows(orders)
 
     mrp_rows = []
@@ -265,6 +229,7 @@ def build_mrp_table():
         build_qty = _safe_float(row["required_build_qty"], 0)
 
         bom_lines = get_bill_of_materials_for_product(
+            client,
             item_id=parent_item_id,
             sku=parent_sku,
             name=parent_description,
@@ -326,6 +291,7 @@ def build_mrp_table():
             required_qty = build_qty * qty_per
 
             stock = get_item_stock(
+                client,
                 item_id=comp_item_id,
                 sku=comp_sku,
                 name=comp_desc,
@@ -393,24 +359,19 @@ def build_mrp_table():
     return df
 
 
-def render_mrp_tab():
+def render_mrp_tab(client):
     st.subheader("MRP - Materials Planning")
+    st.caption("Runs against live SOS data using the same authenticated SOS client as Weekly Production.")
 
-    st.caption(
-        "Runs against live SOS data using the main app authenticated client."
-    )
+    c1, c2 = st.columns(2)
 
-    top1, top2 = st.columns([1, 1])
-
-    run_clicked = top1.button("Run MRP", use_container_width=True, key="mrp_run_btn")
-    refresh_clicked = top2.button(
-        "Refresh MRP Data", use_container_width=True, key="mrp_refresh_btn"
-    )
+    run_clicked = c1.button("Run MRP", use_container_width=True, key="mrp_run_btn")
+    refresh_clicked = c2.button("Refresh MRP Data", use_container_width=True, key="mrp_refresh_btn")
 
     if run_clicked or refresh_clicked:
         with st.spinner("Running MRP from SOS..."):
             try:
-                st.session_state["mrp_df"] = build_mrp_table()
+                st.session_state["mrp_df"] = build_mrp_table(client)
                 st.success("MRP loaded successfully.")
             except Exception as e:
                 st.error(f"MRP failed: {e}")
@@ -421,13 +382,11 @@ def render_mrp_tab():
         st.info("No MRP data loaded yet. Click Run MRP.")
         return
 
-    status_col = "Status" if "Status" in df.columns else None
-
-    if status_col:
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Rows", len(df))
-        c2.metric("Shortages", int((df[status_col] == "SHORT").sum()))
-        c3.metric("No BOM", int((df[status_col] == "NO BOM").sum()))
+    if "Status" in df.columns:
+        x1, x2, x3 = st.columns(3)
+        x1.metric("Rows", len(df))
+        x2.metric("Shortages", int((df["Status"] == "SHORT").sum()))
+        x3.metric("No BOM", int((df["Status"] == "NO BOM").sum()))
 
     st.dataframe(df, use_container_width=True, height=520)
 
